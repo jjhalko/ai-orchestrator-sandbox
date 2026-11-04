@@ -1,0 +1,5 @@
+{
+  "number": 1,
+  "title": "Show the last-updated time at the top of the digest page",
+  "body": "The Daily Run page doesn't say when it was generated. Add a small 'Last updated: <date and time, Eastern>' line under the page title.\n\nAcceptance criteria:\n- The time shown matches when the workflow ran\n- Uses Eastern time\n- Styling matches the existing header"
+}
