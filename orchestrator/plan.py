@@ -226,6 +226,19 @@ def confidence_badge(score: int) -> str:
     return f"🔴 {score}/100"
 
 
+# Confidence gate: at or above this score, the code stage runs automatically.
+GATE_THRESHOLD = int(os.environ.get("ORCH_GATE", "50"))
+
+
+def gate_message(score: int) -> str:
+    if score >= 80:
+        return "✅ Proceeding to the code stage."
+    if score >= GATE_THRESHOLD:
+        return "⚠️ Proceeding to the code stage — review the PR closely."
+    return ("⛔ Stopping here. Answer the open questions in the issue, "
+            "then remove and re-add the `ai-ready` label.")
+
+
 def bullets(items: list[str]) -> str:
     return "\n".join(f"- {i}" for i in items) if items else "_None_"
 
@@ -255,6 +268,9 @@ def format_comment(plan: dict, usage: dict) -> str:
 
 ### Open questions
 {bullets(plan['open_questions'])}
+
+### Next
+{gate_message(plan['confidence'])}
 
 <sub>Model: {MODEL} · tokens in/out: {usage['input_tokens']}/{usage['output_tokens']}</sub>
 """
@@ -305,6 +321,13 @@ def main() -> None:
     comment = format_comment(plan, usage)
     saved = save_run(issue, plan, usage)
     print(f"Saved raw plan to {saved}")
+
+    # Hand the score to later workflow steps (the gate)
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a") as fh:
+            fh.write(f"confidence={plan['confidence']}\n")
+            fh.write(f"proceed={'true' if plan['confidence'] >= GATE_THRESHOLD else 'false'}\n")
 
     if args.dry_run:
         print("\n" + comment)
