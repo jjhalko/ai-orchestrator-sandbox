@@ -1,4 +1,4 @@
-name: AI Plan Stage
+name: AI Pipeline
 
 # Fires when someone adds a label to an issue
 on:
@@ -6,19 +6,24 @@ on:
     types: [labeled]
 
 permissions:
-  contents: read   # read the repo for context
-  issues: write    # post the plan comment
+  contents: write        # push the ai/issue-N branch
+  pull-requests: write   # open the PR
+  issues: write          # post comments
 
 # Only one run per issue at a time
 concurrency:
-  group: ai-plan-${{ github.event.issue.number }}
+  group: ai-pipeline-${{ github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
-  plan:
+  pipeline:
     if: github.event.label.name == 'ai-ready'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,14 +34,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r orchestrator/requirements.txt
 
-      - name: Run plan stage
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Plan stage
+        id: plan
         run: python orchestrator/plan.py
 
-      - name: Keep the raw plan JSON
+      # The confidence gate: only code when the plan scored high enough
+      - name: Code stage
+        if: steps.plan.outputs.proceed == 'true'
+        run: python orchestrator/code.py
+
+      - name: Keep the raw stage JSON
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: plan-issue-${{ github.event.issue.number }}
+          name: pipeline-issue-${{ github.event.issue.number }}
           path: orchestrator_runs/
