@@ -1,0 +1,42 @@
+name: AI Plan Stage
+
+# Fires when someone adds a label to an issue
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read   # read the repo for context
+  issues: write    # post the plan comment
+
+# Only one run per issue at a time
+concurrency:
+  group: ai-plan-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: github.event.label.name == 'ai-ready'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r orchestrator/requirements.txt
+
+      - name: Run plan stage
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python orchestrator/plan.py
+
+      - name: Keep the raw plan JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-issue-${{ github.event.issue.number }}
+          path: orchestrator_runs/
