@@ -42,14 +42,22 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "build", "__pycache__", ".venv"}
 OUTPUT_DIR = Path("orchestrator_runs")
 
 # ---------------------------------------------------------------------------
-# The "tool" Claude must call. Forcing a tool call is the most reliable way
-# to get structured output: the API validates it against this schema.
+# The "tool" Claude should call. With "strict": True the API guarantees the
+# tool's input matches this schema exactly. (Sonnet 5.5 doesn't allow
+# *forcing* a tool call, so the prompt tells it to use the tool, and
+# request_plan() retries if it answers in plain text instead.)
+# Strict mode needs "additionalProperties": False on every object.
 # ---------------------------------------------------------------------------
 PLAN_TOOL = {
     "name": "submit_plan",
-    "description": "Submit the implementation plan for this issue.",
+    "description": (
+        "Submit the implementation plan for this issue. "
+        "Always use this tool to respond; never reply in plain text."
+    ),
+    "strict": True,
     "input_schema": {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "summary": {
                 "type": "string",
@@ -59,6 +67,7 @@ PLAN_TOOL = {
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "path": {"type": "string"},
                         "change": {"type": "string"},
@@ -80,9 +89,7 @@ PLAN_TOOL = {
             },
             "confidence": {
                 "type": "integer",
-                "minimum": 0,
-                "maximum": 100,
-                "description": "How confident you are this plan is correct and complete.",
+                "description": "0-100: how confident you are this plan is correct and complete.",
             },
             "confidence_reason": {"type": "string"},
         },
@@ -173,20 +180,39 @@ def request_plan(issue: dict, repo_context: str) -> tuple[dict, dict]:
         f"{issue.get('body') or '(no description)'}\n\n"
         f"# Repository snapshot\n{repo_context}"
     )
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_OUTPUT_TOKENS,
-        system=SYSTEM_PROMPT,
-        tools=[PLAN_TOOL],
-        tool_choice={"type": "tool", "name": "submit_plan"},
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    plan = next(b.input for b in response.content if b.type == "tool_use")
-    usage = {
-        "input_tokens": response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-    }
-    return plan, usage
+    messages = [{
+        "role": "user",
+        "content": user_msg + "\n\nRespond by calling the submit_plan tool.",
+    }]
+    usage = {"input_tokens": 0, "output_tokens": 0}
+
+    for attempt in range(1, 3):  # one retry if it answers in plain text
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            system=SYSTEM_PROMPT,
+            tools=[PLAN_TOOL],
+            tool_choice={"type": "auto"},
+            messages=messages,
+        )
+        usage["input_tokens"] += response.usage.input_tokens
+        usage["output_tokens"] += response.usage.output_tokens
+
+        tool_call = next(
+            (b for b in response.content if b.type == "tool_use"), None
+        )
+        if tool_call:
+            plan = dict(tool_call.input)
+            plan["confidence"] = max(0, min(100, int(plan["confidence"])))
+            return plan, usage
+
+        print(f"Attempt {attempt}: model replied without the tool; retrying.")
+        messages += [
+            {"role": "assistant", "content": response.content},
+            {"role": "user", "content": "Please submit that plan using the submit_plan tool."},
+        ]
+
+    sys.exit("Model did not call submit_plan after 2 attempts.")
 
 
 # ---------------------------------------------------------------------------
